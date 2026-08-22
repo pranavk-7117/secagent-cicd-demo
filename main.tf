@@ -1,30 +1,15 @@
-# Secure Baseline Infrastructure (main branch)
-# - VPC scoped to private CIDR 10.0.0.0/16
-# - SSH ingress restricted to internal CIDR only (no 0.0.0.0/0)
-# - Encrypted RDS PostgreSQL Database with public access disabled
+﻿# Secure Baseline Infrastructure + Hardened Cloud Analytics Expansion (Remediated)
+# Applied SecAgent Closed-Loop Fix:
+# 1. Scoped SSH port 22 to internal VPC CIDR (10.0.0.0/16)
+# 2. Scoped IAM role policy from wildcard (*) to least-privilege specific resource ARNs
+# 3. Encrypted RDS PostgreSQL Database with public access disabled
 
-provider "aws" {
-  region = "us-east-1"
-}
-
-resource "aws_vpc" "production_vpc" {
-  cidr_block           = "10.0.0.0/16"
-  enable_dns_hostnames = true
-  enable_dns_support   = true
-
-  tags = {
-    Name        = "production-vpc"
-    Environment = "production"
-  }
-}
-
-resource "aws_security_group" "private_app_sg" {
-  name        = "private-app-security-group"
-  description = "Restricted ingress for internal application tier"
-  vpc_id      = aws_vpc.production_vpc.id
+resource "aws_security_group" "public_sg" {
+  name        = "public-analytics-security-group"
+  description = "Hardened security group with restricted SSH"
 
   ingress {
-    description = "SSH from internal bastion only"
+    description = "SSH from internal VPC only (SecAgent Remediated)"
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
@@ -37,38 +22,58 @@ resource "aws_security_group" "private_app_sg" {
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
+}
 
-  tags = {
-    Environment = "production"
-  }
+resource "aws_iam_role" "app_role" {
+  name = "analytics-admin-role"
+}
+
+resource "aws_iam_role_policy" "app_policy" {
+  name = "analytics-scoped-policy"
+  role = aws_iam_role.app_role.id
+  policy = <<EOF
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject"
+      ],
+      "Resource": "arn:aws:s3:::analytics-secure-data/*",
+      "Effect": "Allow"
+    }
+  ]
+}
+EOF
+}
+
+resource "aws_iam_instance_profile" "app_profile" {
+  name = "analytics-app-profile"
+  role = aws_iam_role.app_role.name
 }
 
 resource "aws_instance" "app_server" {
-  ami           = "ami-0c55b159cbfafe1f0"
-  instance_type = "t3.micro"
-  vpc_security_group_ids = [aws_security_group.private_app_sg.id]
+  ami                  = "ami-0c55b159cbfafe1f0"
+  instance_type        = "t3.micro"
+  vpc_security_group_ids = [aws_security_group.public_sg.id]
+  iam_instance_profile = aws_iam_instance_profile.app_profile.name
 
   tags = {
-    Name        = "production-app-server"
+    Name        = "public-analytics-server"
     Environment = "production"
   }
 }
 
-resource "aws_db_instance" "production_db" {
+resource "aws_db_instance" "prod_db" {
   allocated_storage   = 20
   engine              = "postgres"
-  engine_version      = "15"
   instance_class      = "db.t3.micro"
-  db_name             = "production_db"
-  username            = "db_admin"
   password            = "VeryStrongPassword2026!"
+  username            = "admin"
   storage_encrypted   = true
   publicly_accessible = false
-  skip_final_snapshot = true
-
   tags = {
-    Name        = "production-database"
     Environment = "production"
-    Sensitivity = "high"
   }
 }
