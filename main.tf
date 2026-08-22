@@ -1,7 +1,8 @@
-# Secure Baseline Infrastructure (main branch)
-# - VPC scoped to private CIDR 10.0.0.0/16
-# - SSH ingress restricted to internal CIDR only (no 0.0.0.0/0)
-# - Encrypted RDS PostgreSQL Database with public access disabled
+﻿# Secure Baseline Infrastructure + Remediated Web Tier
+# Fixes applied via SecAgent Closed-Loop Remediation:
+# 1. Scoped SSH port 22 to internal VPC CIDR (10.0.0.0/16) — eliminates T1190 public ingress
+# 2. Scoped IAM role policy from wildcard (*) to least-privilege specific resource ARNs — eliminates T1078.004
+# 3. Encrypted RDS PostgreSQL Database with public access disabled
 
 provider "aws" {
   region = "us-east-1"
@@ -18,79 +19,23 @@ resource "aws_vpc" "production_vpc" {
   }
 }
 
-resource "aws_security_group" "private_app_sg" {
-  name        = "private-app-security-group"
-  description = "Restricted ingress for internal application tier"
+resource "aws_security_group" "public_web_sg" {
+  name        = "public-web-security-group"
+  description = "Remediated security group with restricted SSH"
   vpc_id      = aws_vpc.production_vpc.id
 
   ingress {
-    description = "SSH from internal bastion only"
+    description = "SSH from internal VPC only (SecAgent Remediated)"
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
     cidr_blocks = ["10.0.0.0/16"]
   }
 
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = {
-    Environment = "production"
-  }
-}
-
-resource "aws_instance" "app_server" {
-  ami           = "ami-0c55b159cbfafe1f0"
-  instance_type = "t3.micro"
-  vpc_security_group_ids = [aws_security_group.private_app_sg.id]
-
-  tags = {
-    Name        = "production-app-server"
-    Environment = "production"
-  }
-}
-
-resource "aws_db_instance" "production_db" {
-  allocated_storage   = 20
-  engine              = "postgres"
-  engine_version      = "15"
-  instance_class      = "db.t3.micro"
-  db_name             = "production_db"
-  username            = "db_admin"
-  password            = "VeryStrongPassword2026!"
-  storage_encrypted   = true
-  publicly_accessible = false
-  skip_final_snapshot = true
-
-  tags = {
-    Name        = "production-database"
-    Environment = "production"
-    Sensitivity = "high"
-  }
-}
-# Insecure Pull Request Change (feature/insecure-change branch)
-# Introduces:
-# 1. Open SSH ingress to 0.0.0.0/0 on security group (T1190 Exploit Public-Facing App)
-# 2. Wildcard IAM Role with Action: "*" and Resource: "*" (T1078.004 Cloud Account Takeover)
-# 3. Instance profile connecting public compute to wildcard IAM
-# 4. Public access to production database (T1530 Data Exfiltration)
-#
-# Result: Creates deterministic attack path:
-# Internet -> Public SG -> EC2 -> IAM Wildcard -> Production RDS Database
-
-resource "aws_security_group" "public_web_sg" {
-  name        = "public-web-security-group"
-  description = "Dangerous open SSH ingress"
-  vpc_id      = aws_vpc.production_vpc.id
-
   ingress {
-    description = "SSH from anywhere - VULNERABILITY"
-    from_port   = 22
-    to_port     = 22
+    description = "HTTPS public web traffic"
+    from_port   = 443
+    to_port     = 443
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
@@ -104,6 +49,7 @@ resource "aws_security_group" "public_web_sg" {
 
   tags = {
     Environment = "production"
+    Security    = "Remediated"
   }
 }
 
@@ -127,9 +73,9 @@ resource "aws_iam_role_policy" "wildcard_admin_policy" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Action   = "*"
+      Action   = ["s3:GetObject", "s3:PutObject"]
       Effect   = "Allow"
-      Resource = "*"
+      Resource = "arn:aws:s3:::production-app-data/*"
     }]
   })
 }
@@ -146,7 +92,25 @@ resource "aws_instance" "exposed_web_server" {
   iam_instance_profile = aws_iam_instance_profile.web_admin_profile.name
 
   tags = {
-    Name        = "exposed-web-server"
+    Name        = "production-web-server"
+    Environment = "production"
+  }
+}
+
+resource "aws_db_instance" "production_db" {
+  allocated_storage   = 20
+  engine              = "postgres"
+  engine_version      = "15"
+  instance_class      = "db.t3.micro"
+  db_name             = "production_db"
+  username            = "db_admin"
+  password            = "VeryStrongPassword2026!"
+  storage_encrypted   = true
+  publicly_accessible = false
+  skip_final_snapshot = true
+
+  tags = {
+    Name        = "production-database"
     Environment = "production"
   }
 }
